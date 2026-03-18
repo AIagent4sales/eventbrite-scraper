@@ -36,11 +36,13 @@ npm install
 
 **2. Add your API key**
 
-Open the `.env` file and fill in your Spidra API key:
+Copy the example config file:
 
+```bash
+cp .env.example .env
 ```
-SPIDRA_API_KEY=your_api_key_here
-```
+
+Then open `.env` and replace `your_api_key_here` with your actual Spidra API key. You can also set your default `SEARCH_URL` and `PAGES` here so you don't have to type them every time.
 
 ---
 
@@ -50,9 +52,7 @@ SPIDRA_API_KEY=your_api_key_here
 npm run scrape
 ```
 
-By default it will scrape pages 1 and 2 of the Houston lectures search on Eventbrite.
-
-**To change the search or pages**, set them when running the command:
+By default it will use whatever is set in your `.env` file. You can also override any setting directly in the command — useful for one-off runs without changing your config:
 
 ```bash
 # Scrape pages 1 to 5
@@ -61,7 +61,7 @@ PAGES=1-5 npm run scrape
 # Use a different Eventbrite search URL
 SEARCH_URL=https://www.eventbrite.com/d/ca--san-francisco/tech/ PAGES=1-3 npm run scrape
 
-# Re-run enrichment without re-discovering events (faster)
+# Re-run without re-discovering events (faster)
 SKIP_DISCOVERY=true npm run scrape
 ```
 
