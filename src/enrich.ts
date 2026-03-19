@@ -82,6 +82,42 @@ function cleanFacebook(fb: string | null | undefined): string {
   return fb;
 }
 
+/**
+ * Follows HTTP redirects and returns the final destination URL.
+ * Used to resolve shortlinks (bit.ly, tinyurl, etc.) before appending /contact or /about.
+ */
+async function resolveUrl(url: string): Promise<string> {
+  try {
+    const res = await fetch(url, { method: "HEAD", redirect: "follow" });
+    return res.url || url;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * After scraping the website root with no email found, tries /contact then /about.
+ * Returns the first result that contains an email, or null if neither does.
+ */
+async function tryExtraContactPages(baseUrl: string): Promise<any> {
+  const base = baseUrl.replace(/\/$/, "");
+  for (const suffix of ["/contact", "/about"]) {
+    const url = `${base}${suffix}`;
+    console.log(`  -> Extra page: ${url}`);
+    try {
+      const result = await scrape(url, `
+        Extract contact info. Return EXACTLY this flat JSON:
+        { "email": "...", "phone": "...", "address": "...", "facebook": "..." }
+        Use null for any field not found. Do NOT nest the data.
+      `) || {};
+      if (result?.email) return result;
+    } catch {
+      // page not found or scrape failed — try next
+    }
+  }
+  return null;
+}
+
 // ─── CSV Utilities ────────────────────────────────────────────────────────────
 
 function parseCSVLine(line: string): string[] {
@@ -199,6 +235,18 @@ async function main() {
         if (isEmpty(phone) && contact?.phone)    phone    = contact.phone;
         if (isEmpty(address) && contact?.address) address = contact.address;
         if (isEmpty(facebook) && contact?.facebook) facebook = cleanFacebook(contact.facebook);
+      }
+
+      // Step B2: /contact and /about pages — only if website returned no email
+      if (!isEmpty(website) && isEmpty(email)) {
+        const resolvedWebsite = await resolveUrl(website);
+        const extraContact = await tryExtraContactPages(resolvedWebsite);
+        if (extraContact) {
+          if (isEmpty(email)    && extraContact?.email)    email    = extraContact.email;
+          if (isEmpty(phone)    && extraContact?.phone)    phone    = extraContact.phone;
+          if (isEmpty(address)  && extraContact?.address)  address  = extraContact.address;
+          if (isEmpty(facebook) && extraContact?.facebook) facebook = cleanFacebook(extraContact.facebook);
+        }
       }
 
       // Step C: Facebook — last resort for email/phone/address

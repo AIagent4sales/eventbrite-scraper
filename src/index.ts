@@ -87,17 +87,18 @@ function parsePages(input: string): number[] {
 /** Returns a blank record for an event URL — used to pre-fill the output file. */
 function emptyRecord(eventUrl: string) {
   return {
-    event_name:       null,
-    event_url:        eventUrl,
-    organizer_name:   null,
-    organizer_url:    null,
+    event_name:        null,
+    event_url:         eventUrl,
+    organizer_name:    null,
+    organizer_url:     null,
     organizer_website: null,
-    email:            null,
-    phone:            null,
-    address:          null,
-    facebook:         null,
-    follower_count:   null,
-    total_events:     null,
+    email:             null,
+    phone:             null,
+    address:           null,
+    facebook:          null,
+    follower_count:    null,
+    total_events:      null,
+    summary:           null,
   };
 }
 
@@ -118,6 +119,57 @@ function archiveIfExists(path: string) {
     fs.renameSync(path, path.replace(".json", `-${ts}.json`));
     console.log(`Archived previous results`);
   }
+}
+
+/**
+ * Follows HTTP redirects and returns the final destination URL.
+ * Used to resolve shortlinks (bit.ly, tinyurl, etc.) before appending /contact or /about.
+ */
+async function resolveUrl(url: string): Promise<string> {
+  try {
+    const res = await fetch(url, { method: "HEAD", redirect: "follow" });
+    return res.url || url;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * After scraping the website root with no email found, tries /contact then /about.
+ * Returns the first result that contains an email, or null if neither does.
+ */
+async function tryExtraContactPages(baseUrl: string): Promise<any> {
+  const base = baseUrl.replace(/\/$/, "");
+  for (const suffix of ["/contact", "/about"]) {
+    const url = `${base}${suffix}`;
+    console.log(`  -> Extra page: ${url}`);
+    try {
+      const result = await scrape(url, `
+        Extract contact info. Return EXACTLY this flat JSON:
+        { "email": "...", "phone": "...", "address": "...", "facebook": "..." }
+        Use null for any field not found. Do NOT nest the data.
+      `) || {};
+      if (result?.email) return result;
+    } catch {
+      // page not found or scrape failed — try next
+    }
+  }
+  return null;
+}
+
+/** Builds a human-readable summary from event detail fields. Null fields are omitted. */
+function generateSummary(fields: {
+  frequency:    string | null;
+  ticket_price: number | null;
+  venue:        string | null;
+  event_date:   string | null;
+}): string | null {
+  const parts: string[] = [];
+  if (fields.frequency)            parts.push(fields.frequency);
+  if (fields.ticket_price != null) parts.push(`ticket price $${fields.ticket_price}`);
+  if (fields.venue)                parts.push(fields.venue);
+  if (fields.event_date)           parts.push(fields.event_date);
+  return parts.length > 0 ? parts.join(" | ") : null;
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -152,9 +204,11 @@ async function main() {
       console.log(`  Page ${page}: ${pageUrl}`);
       try {
         const result = await scrape(pageUrl, `
-          Extract all event URLs from this Eventbrite search page.
-          Return JSON: { "event_urls": ["https://www.eventbrite.com/e/...", ...] }
-          Only include URLs containing /e/ (actual event pages).
+          Extract all event links from this Eventbrite search results page.
+          Return JSON: { "event_urls": ["...", ...] }
+          Include every URL that contains "/e/" in the path — these are the individual event pages.
+          Include the full URL exactly as it appears, including any query parameters.
+          Do not filter or modify the URLs.
         `);
         const urls: string[] = result?.event_urls || [];
         urls.filter(u => u?.includes("/e/")).forEach(u => eventUrlSet.add(u));
@@ -202,9 +256,20 @@ async function main() {
     console.log(`[${i + 1}/${eventUrls.length}] ${eventUrl}`);
 
     try {
-      // 1. Event page — get event name and organizer link
+      // 1. Event page — get event name, organizer link, and event details
       const event = await scrape(eventUrl, `
-        Extract: event_name, organizer_name, organizer_url (the /o/... link)
+        Extract the following fields and return a flat JSON object with exactly these keys:
+        {
+          "event_name":    "...",
+          "organizer_name": "...",
+          "organizer_url": "... (the /o/... link on eventbrite)",
+          "description":   "... (1-2 sentence summary of what the event is)",
+          "event_date":    "... (start date and time, e.g. 'Saturday, April 5 at 7:00 PM EDT')",
+          "frequency":     "... (one of: weekly, monthly, one-time, or describe the recurrence pattern)",
+          "ticket_price":  null,
+          "venue":         "... (venue name or location)"
+        }
+        ticket_price must be a number in USD or null (not a string). Use null for any field not found.
       `);
 
       // 2. Organizer page — get website, Facebook, follower count
@@ -247,6 +312,16 @@ async function main() {
         }
       }
 
+      // 3b. /contact and /about pages — only if website root returned no email
+      if (organizer?.website && !websiteContact?.email) {
+        const resolvedWebsite = await resolveUrl(organizer.website);
+        const extraContact = await tryExtraContactPages(resolvedWebsite);
+        if (extraContact) {
+          websiteContact = { ...websiteContact, ...extraContact };
+          websiteCache.set(organizer.website, websiteContact);
+        }
+      }
+
       // 4. Facebook — fallback for email/phone/address if still missing
       //    Prefers the Facebook URL found on the website; falls back to the one
       //    on the organizer page. Uses a residential proxy to bypass the login wall.
@@ -268,17 +343,23 @@ async function main() {
 
       // Merge all collected data into the final record
       allResults[i] = {
-        event_name:        event?.event_name || null,
+        event_name:        event?.event_name        || null,
         event_url:         eventUrl,
         organizer_name:    organizer?.organizer_name || event?.organizer_name || null,
-        organizer_url:     event?.organizer_url || null,
-        organizer_website: organizer?.website || null,
-        email:             websiteContact?.email || facebookContact?.email || null,
-        phone:             websiteContact?.phone || facebookContact?.phone || null,
-        address:           websiteContact?.address || facebookContact?.address || null,
+        organizer_url:     event?.organizer_url      || null,
+        organizer_website: organizer?.website        || null,
+        email:             websiteContact?.email     || facebookContact?.email   || null,
+        phone:             websiteContact?.phone     || facebookContact?.phone   || null,
+        address:           websiteContact?.address   || facebookContact?.address || null,
         facebook:          facebookUrl,
         follower_count:    organizer?.follower_count || null,
-        total_events:      organizer?.total_events || null,
+        total_events:      organizer?.total_events   || null,
+        summary:           generateSummary({
+          frequency:    event?.frequency          || null,
+          ticket_price: event?.ticket_price       ?? null,
+          venue:        event?.venue              || null,
+          event_date:   event?.event_date         || null,
+        }),
       };
 
       console.log(`  Done: ${allResults[i].event_name}\n`);
