@@ -270,8 +270,8 @@ async function main() {
 
     console.log(`[${Object.keys(progress).length + 1}/${rows.length}] ${organizerUrl}`);
 
+    // Step A: Organizer page — find website, Facebook, follower_count, total_events, twitter
     try {
-      // Step A: Organizer page — find website, Facebook, follower_count, total_events, twitter
       if (isEmpty(website) || isEmpty(followerCount) || isEmpty(totalEvents) || isEmpty(twitter)) {
         console.log(`  -> Organizer page`);
         const org = await scrape(organizerUrl, `
@@ -287,8 +287,12 @@ async function main() {
         if (isEmpty(totalEvents)   && rawTe != null) totalEvents   = String(rawTe);
         if (isEmpty(twitter)       && org?.twitter)                twitter       = org.twitter;
       }
+    } catch (err: any) {
+      console.log(`  Step A error: ${err.message}`);
+    }
 
-      // Step B: Website — fill in any missing contact fields
+    // Step B: Website — fill in any missing contact fields
+    try {
       if (!isEmpty(website) && (isEmpty(email) || isEmpty(phone) || isEmpty(address))) {
         console.log(`  -> Website: ${website}`);
         const contact = await scrape(website, `
@@ -296,9 +300,9 @@ async function main() {
           { "email": "...", "phone": "...", "address": "...", "facebook": "..." }
           Use null for any field not found. Do NOT nest the data.
         `) || {};
-        if (isEmpty(email) && contact?.email)    email    = contact.email;
-        if (isEmpty(phone) && contact?.phone)    phone    = contact.phone;
-        if (isEmpty(address) && contact?.address) address = contact.address;
+        if (isEmpty(email) && contact?.email)       email    = contact.email;
+        if (isEmpty(phone) && contact?.phone)       phone    = contact.phone;
+        if (isEmpty(address) && contact?.address)   address  = contact.address;
         if (isEmpty(facebook) && contact?.facebook) facebook = cleanFacebook(contact.facebook);
       }
 
@@ -313,8 +317,12 @@ async function main() {
           if (isEmpty(facebook) && extraContact?.facebook) facebook = cleanFacebook(extraContact.facebook);
         }
       }
+    } catch (err: any) {
+      console.log(`  Step B error: ${err.message}`);
+    }
 
-      // Step C: Facebook — fills any still-missing fields using a residential proxy.
+    // Step C: Facebook — fills any still-missing fields using a residential proxy.
+    try {
       const needsFacebook = !isEmpty(facebook) && (
         isEmpty(email) || isEmpty(phone) || isEmpty(address) ||
         isEmpty(description) || isEmpty(city) || isEmpty(country)
@@ -347,28 +355,28 @@ async function main() {
         if (isEmpty(country)     && fb?.country)     country     = fb.country;
         if (isEmpty(website)     && fb?.website)     website     = fb.website;
       }
-
-      // Write enriched fields back to the row using flexible column name matching
-      writeCol(row, website,       "Website URL", "Website");
-      writeCol(row, email,         "email", "Email");
-      writeCol(row, phone,         "Phone Number", "Phone");
-      writeCol(row, address,       "Street Address", "address");
-      writeCol(row, facebook,      "Facebook Company Page", "facebook");
-      writeCol(row, description,   "Description", "description");
-      writeCol(row, city,          "City", "city");
-      writeCol(row, country,       "Country/Region", "Country");
-      writeCol(row, followerCount, "Eventbrite followers", "follower_count");
-      writeCol(row, totalEvents,   "total_events", "Total Events");
-      writeCol(row, twitter,       "Twitter Handle", "twitter");
-
-      progress[organizerUrl] = { ...row };
-      fs.writeFileSync(PROGRESS_FILE, JSON.stringify(progress, null, 2));
-
-      console.log(`  Done: email=${email || "—"} phone=${phone || "—"} city=${city || "—"}\n`);
-      enriched++;
     } catch (err: any) {
-      console.log(`  Error: ${err.message}\n`);
+      console.log(`  Step C error: ${err.message}`);
     }
+
+    // Write enriched fields back to the row and save progress regardless of step errors
+    writeCol(row, website,       "Website URL", "Website");
+    writeCol(row, email,         "email", "Email");
+    writeCol(row, phone,         "Phone Number", "Phone");
+    writeCol(row, address,       "Street Address", "address");
+    writeCol(row, facebook,      "Facebook Company Page", "facebook");
+    writeCol(row, description,   "Description", "description");
+    writeCol(row, city,          "City", "city");
+    writeCol(row, country,       "Country/Region", "Country");
+    writeCol(row, followerCount, "Eventbrite followers", "follower_count");
+    writeCol(row, totalEvents,   "total_events", "Total Events");
+    writeCol(row, twitter,       "Twitter Handle", "twitter");
+
+    progress[organizerUrl] = { ...row };
+    fs.writeFileSync(PROGRESS_FILE, JSON.stringify(progress, null, 2));
+
+    console.log(`  Done: email=${email || "—"} phone=${phone || "—"} city=${city || "—"}\n`);
+    enriched++;
 
     await sleep(1000);
   }
